@@ -1,11 +1,12 @@
-// index.js - PlayFab Proxy Server with SessionTicket for Client APIs
+// api/index.js - PlayFab Proxy Server with SessionTicket for Client APIs
 
 const express = require('express');
 const axios = require('axios');
-const bodyParser = require('body-parser');
 
-const app = express.Router();
-const PORT = 3000;
+const app = express();  // ← Fixed: Full Express app (not Router)
+
+// Vercel handles the port, no need for local PORT or app.listen()
+// const PORT = 3000;
 
 // Load PlayFab config
 const PLAYFAB_TITLE_ID = "34dc6";
@@ -15,13 +16,19 @@ if (!PLAYFAB_TITLE_ID) {
     process.exit(1);
 }
 
-app.use(bodyParser.json());
+// Middleware
+app.use(express.json());  // Replaces body-parser (built-in in Express)
+
+// Logging middleware
+app.use((req, res, next) => {
+    console.log(`Received ${req.method} request for ${req.url} from ${req.ip}`);
+    next();
+});
 
 // -------------------------
 // Helpers
 // -------------------------
 
-// Client-level request (user APIs, using SessionTicket)
 async function proxyPlayFabClient(endpoint, body, sessionTicket) {
     try {
         const url = `https://${PLAYFAB_TITLE_ID}.playfabapi.com/${endpoint}`;
@@ -46,12 +53,6 @@ async function proxyPlayFabClient(endpoint, body, sessionTicket) {
 // PlayFab Proxy Endpoints
 // -------------------------
 
-app.use((req, res, next) => {
-    console.log(`Received ${req.method} request for ${req.url} ${req.ip}`);
-
-    next();
-})
-
 // CloudScript endpoints (server-level)
 app.post('/CloudScript/ExecuteEntityCloudScript', async (req, res) => {
     const sessionTicket = req.headers['x-sessionticket'];
@@ -73,50 +74,53 @@ app.post('/CloudScript/ExecuteFunction', async (req, res) => {
     res.json(data);
 });
 
-// Client endpoints (user-level)
+// Client endpoints
 
-// LoginWithCustomID does not need a session ticket yet
+// LoginWithCustomID does not require a session ticket
 app.get('/Client/LoginWithCustomID', async (req, res) => {
-    const data = await proxyPlayFabClient(
-        'Client/LoginWithCustomID',
-        req.body
-    );
+    const data = await proxyPlayFabClient('Client/LoginWithCustomID', req.body);
     res.json(data);
 });
 
-app.post("//Client/GetCatalogItems", async (req, res) => {
-    res.json({"code":200,"status":"OK","data":{"Catalog":[]}});
-})
-
-// Mock GetUserInventory
-app.post('//Client/GetUserInventory', async (req, res) => {
-    const sessionTicket = req.headers['x-sessionticket'] || req.body.SessionTicket;
-    const data = await proxyPlayFabClient('Client/GetUserData', req.body, sessionTicket);
-
-    const mockResponse = 
-        {
+// Fixed double slashes
+app.post('/Client/GetCatalogItems', async (req, res) => {
+    res.json({
         "code": 200,
-            "data": {
+        "status": "OK",
+        "data": { "Catalog": [] }
+    });
+});
+
+// Mock GetUserInventory (using real GetUserData as base if needed)
+app.post('/Client/GetUserInventory', async (req, res) => {
+    const sessionTicket = req.headers['x-sessionticket'] || req.body.SessionTicket;
+
+    // You can keep the real call or just return mock – here we return mock directly
+    const mockResponse = {
+        "code": 200,
+        "status": "OK",
+        "data": {
             "Inventory": [
-// Mock inventory items can be added here (replace it with this entire line)
+                // Add mock inventory items here if desired
             ],
-                "VirtualCurrency": {
+            "VirtualCurrency": {
                 "GD": 500,
-                    "KY": 3
+                "KY": 3
             },
-            "VirtualCurrencyRechargeTimes": { }
-        },
-        "status": "OK"
+            "VirtualCurrencyRechargeTimes": {}
+        }
     };
+
     res.json(mockResponse);
 });
 
-// Test endpoint
+// Test endpoint – should now work and show on root URL
 app.get('/', (req, res) => {
     res.send('PlayFab Proxy is running!');
 });
 
-app.use(async (req, res, next) => {
+// Catch-all fallback for any other PlayFab client endpoints
+app.all('*', async (req, res) => {
     let sessionTicket;
     if (req.headers['x-sessionticket']) {
         sessionTicket = req.headers['x-sessionticket'];
@@ -124,11 +128,14 @@ app.use(async (req, res, next) => {
         sessionTicket = req.body.SessionTicket;
     }
 
-    const data = await proxyPlayFabClient(req.path, req.body, sessionTicket);
+    // Remove leading slash for PlayFab endpoint
+    const endpoint = req.path.startsWith('/') ? req.path.slice(1) : req.path;
+
+    const data = await proxyPlayFabClient(endpoint, req.body, sessionTicket);
     res.json(data);
 });
 
 // -------------------------
-// Start server
+// Export for Vercel
 // -------------------------
 module.exports = app;
